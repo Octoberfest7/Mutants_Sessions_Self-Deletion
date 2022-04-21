@@ -3,7 +3,7 @@ This repo will cover several different capabilities that may be implemented inde
 
 **1. Mutants** - Means by which to prevent several instances of the payload running simultaneously 
 
-**2. Session Migration** - A technique to obtain a System shell in Session 0 from a user session with Administrator privileges
+**2. Session 1 -> Session 0 Migration** - A technique to obtain a System shell in Session 0 from a user session with Administrator privileges
 
 **3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit https://github.com/LloydLabs/delete-self-poc)
 
@@ -157,4 +157,55 @@ BOOL DuplicateHandle(
 );
 ```
 
-Most typical examples of this API that you will find use it in order to "get" a handle from another process
+Most typical examples of this API that you will find use it in order to "get" a handle from another process or to duplicate a handle within the local process. In our case we will use it to "give" the payload processes mutant handle to the parent process as shown below
+
+<img width="677" alt="image" src="https://user-images.githubusercontent.com/91164728/164518223-01cb26d8-6bfb-4a06-a701-4284ff58b64e.png">
+
+After calling DuplicateHandle() the parent process also has a handle to the mutex, and when CreateProcess is called utilizing PPID spoofing the spawned process inherits the handle to the mutex as desired.
+
+<img width="842" alt="image" src="https://user-images.githubusercontent.com/91164728/164520239-a18eae5c-e97a-46a7-a873-88f5cc8e3b5f.png">
+
+There is however yet another problem. After payload.exe finishes spawning and injecting Notepad.exe, it exits, closing its handle to the mutant.  When the beacon is eventually exited, its handle to the mutant is closed. Upon trying to run the payload again, it will not create a new beacon because the parent process still has it's handle to the mutant.  In order to remove the handle DuplicateHandle() must be called again, this time in reverse, and with the DUPLICATE_CLOSE_SOURCE flag specified.  This will duplicate the handle that the parent process holds to the mutant back to payload.exe and in doing so close the handle that the parent holds.  Payload.exe will now have two handles to the mutex, both of which will exit when it does.  The final sequence of events regarding the handles is as follows:
+
+<img width="864" alt="image" src="https://user-images.githubusercontent.com/91164728/164522155-c04d157c-6c25-4ab5-b1bf-0e23003a8c77.png">
+
+1. CreateMutex() is called to create the mutant
+2. DuplicateHandle() is called to pass the mutant handle to the parent process
+3. CreateProcess is called with PPID Spoofing, passing the mutant handle to Notepad.exe
+4. DuplicateHandle() is called a second time with the DUPLICATE_CLOSE_SOURCE flag to remove the handle from the parent process
+5. Payload.exe exits, closing its handles to the mutant
+6. Notepad.exe holds the only remaining open handle to the mutant.  When the beacon exits, the mutant will be removed, and the payload may successfully run again.
+
+Success!
+
+### Making it smarter
+
+We have successfully implemented mutants into the RSI model shellcode runner, preventing multiple instances of payload.exe from running.  Note that it does NOT prevent additional beacons on the machine created via different methods, like through Cobalt Strikes Shinject command.  What are the limitations of this capability as it has been implemented?
+
+The shellcode runner logic checks for the existence of a specific named mutant; if the mutant name is static and hardcoded into the runner, it would prevent, for example, the payload being able to be run from a medium integrity prompt and then again from a high integrity prompt.  This is undesirable as one might obtain code execution in a privileged context and wish to use it to kick another beacon.  Another possible limitation exists when talking about alternate communication channels; suppose there is a long standing, infrequently calling back DNS beacon that has been maintained until the time comes for active effects against the machine, at which point an HTTPS beacon is desired due to their vastly superior data transfering abilities. If the mutant name is hardcoded into each generated payload, this alternate channel beacon would be prevented from running by the presence of the mutant from the DNS beacon.
+
+To address these issues name generation for the mutant has been made dynamic. The mutant name will now comprise of two parts:
+
+1. The data channel (HTTPS, DNS, etc)
+2. The username of the context running it (Tim, Administrator, System, etc.)
+
+By combining these two variables a more unique mutant name can be created which will allow the following:
+
+1. The same user may run payloads of different communication channel types
+2. Different users may run the same payload
+3. The same user may run the same payload in different integrities (normal cmd.exe vs Administrator cmd.exe.  Requires some more work but possible)
+
+and prevent:
+
+1. The same payload being ran by the same user in the same integrity.  
+
+The case that is prevented is the one which would result from a persistence method ran awry.
+
+In order to add some measure of tradecraft and prevent the existence of a named mutex called "HTTPSAdministrator", the combined name is ran through a hashing function to produce a unique number which will serve as the name:
+
+<img width="201" alt="image" src="https://user-images.githubusercontent.com/91164728/164530926-2a9ebf99-2c60-41e7-9051-fa8c17a7c9ca.png">
+
+The POC that is provided demonstrates this fully fleshed out mutant capability in the PPID Spoofing RSI implementation; implementing the working mutant dynamic generation allowing the same user to run the same payload in different integrities in a LI shellcode runner will be left as an exercise to the reader. 
+
+## Session 1 -> Session 0 Migration
+
