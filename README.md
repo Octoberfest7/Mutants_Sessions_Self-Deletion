@@ -209,6 +209,8 @@ The POC that is provided demonstrates this fully fleshed out mutant capability i
 
 ## Session 1 -> Session 0 Migration
 
-When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system integrity and the system session.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who we executed the payload as logged out;  it was during all of the testing involving mutants that this error was finally realized which posed the question: is it possible to spawn a session 0 process from session X (a user session)?
+When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out;  it was during all of the testing involving mutants that this error was finally realized which raised the question: is it possible to spawn a session 0 process from session X (a user session)?
 
-Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens. 
+Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens, integrity levels, and Win32API's involved in token manipulation. 
+
+
