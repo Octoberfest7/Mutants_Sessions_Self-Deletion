@@ -81,7 +81,7 @@ That is the legitimate usage of a mutant; but how is that useful in an offensive
 
 ### Mutants in Implants
 
-The usefulness of a mutant in a payload lies not in it's ability to control access to a shared resource, but in the fact that it is a system object that can be checked to see whether or not it exists. We choose to use a global mutant, as we want to check for the existence of the mutant accross all sessions as depending on what is happening operationally multiple sessions may be impacted.
+The usefulness of a mutant in a payload lies not in its ability to control access to a shared resource, but in the fact that it is a system object that can be checked to see whether or not it exists. We choose to use a global mutant, as we want to check for the existence of the mutant accross all sessions as depending on what is happening operationally multiple sessions may be impacted.
 
 There are a myriad of different ways malware can be delivered, executed, and persistence set.  Each time malware runs on a target computer it performs actions that may be detected by AV engines, EDR's, and/or defenders, and as such care should be taken to ensure that 
 1. Only necesssary actions are performed
@@ -165,7 +165,7 @@ After calling DuplicateHandle() the parent process also has a handle to the mute
 
 <img width="842" alt="image" src="https://user-images.githubusercontent.com/91164728/164520239-a18eae5c-e97a-46a7-a873-88f5cc8e3b5f.png">
 
-There is however yet another problem. After payload.exe finishes spawning and injecting Notepad.exe, it exits, closing its handle to the mutant.  When the beacon is eventually exited, its handle to the mutant is closed. Upon trying to run the payload again, it will not create a new beacon because the parent process still has it's handle to the mutant.  In order to remove the handle DuplicateHandle() must be called again, this time in reverse, and with the DUPLICATE_CLOSE_SOURCE flag specified.  This will duplicate the handle that the parent process holds to the mutant back to payload.exe and in doing so close the handle that the parent holds.  Payload.exe will now have two handles to the mutex, both of which will exit when it does.  The final sequence of events regarding the handles is as follows:
+There is however yet another problem. After payload.exe finishes spawning and injecting Notepad.exe, it exits, closing its handle to the mutant.  When the beacon is eventually exited, its handle to the mutant is closed. Upon trying to run the payload again, it will not create a new beacon because the parent process still has its handle to the mutant.  In order to remove the handle DuplicateHandle() must be called again, this time in reverse, and with the DUPLICATE_CLOSE_SOURCE flag specified.  This will duplicate the handle that the parent process holds to the mutant back to payload.exe and in doing so close the handle that the parent holds.  Payload.exe will now have two handles to the mutex, both of which will exit when it does.  The final sequence of events regarding the handles is as follows:
 
 <img width="864" alt="image" src="https://user-images.githubusercontent.com/91164728/164522155-c04d157c-6c25-4ab5-b1bf-0e23003a8c77.png">
 
@@ -182,7 +182,7 @@ Success!
 
 We have successfully implemented mutants into the RSI model shellcode runner, preventing multiple instances of payload.exe from running.  Note that it does NOT prevent additional beacons on the machine created via different methods, like through Cobalt Strikes Shinject command.  What are the limitations of this capability as it has been implemented?
 
-The shellcode runner logic checks for the existence of a specific named mutant; if the mutant name is static and hardcoded into the runner, it would prevent, for example, the payload being able to be run from a medium integrity prompt and then again from a high integrity prompt.  This is undesirable as one might obtain code execution in a privileged context and wish to use it to kick another beacon.  Another possible limitation exists when talking about alternate communication channels; suppose there is a long standing, infrequently calling back DNS beacon that has been maintained until the time comes for active effects against the machine, at which point an HTTPS beacon is desired due to their vastly superior data transfering abilities. If the mutant name is hardcoded into each generated payload, this alternate channel beacon would be prevented from running by the presence of the mutant from the DNS beacon.
+The shellcode runner logic checks for the existence of a specific named mutant; if the mutant name is static and hardcoded into the runner, it would prevent, for example, the payload being able to be ran by different users on the same machine.  This is undesirable as one might obtain code execution in a privileged context and wish to use it to kick another beacon.  Another possible limitation exists when talking about alternate communication channels; suppose there is a long standing, infrequently calling back DNS beacon that has been maintained until the time comes for active effects against the machine, at which point an HTTPS beacon is desired due to their vastly superior data transfering abilities. If the mutant name is hardcoded into each generated payload, this alternate channel beacon would be prevented from running by the presence of the mutant from the DNS beacon.
 
 To address these issues name generation for the mutant has been made dynamic. The mutant name will now comprise of two parts:
 
@@ -209,3 +209,6 @@ The POC that is provided demonstrates this fully fleshed out mutant capability i
 
 ## Session 1 -> Session 0 Migration
 
+When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system integrity and the system session.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who we executed the payload as logged out;  it was during all of the testing involving mutants that this error was finally realized which posed the question: is it possible to spawn a session 0 process from session X (a user session)?
+
+Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens. 
