@@ -1,5 +1,5 @@
 # Fun with Mutants, Session Migration, and Self-Deleting Payloads
-This repo will cover several different techniques that may be implemented independently or in conjunction with each other to provide additional capabilities in payloads. These capabilties are as follows:
+This repo will cover several different capabilities that may be implemented independently or in conjunction with each other to provide additional functionality in payloads. These capabilties are as follows:
 
 **1. Mutants** - Means by which to prevent several instances of the payload running simultaneously 
 
@@ -8,6 +8,8 @@ This repo will cover several different techniques that may be implemented indepe
 **3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit https://github.com/LloydLabs/delete-self-poc)
 
 The primary focus of this post is to document the development process of each technique and to explain it in some detail, however code samples demonstrating each will also be provided.
+
+This will be an exceptionally long post but I of course encourage you to read it all.  If that needs to be done in chunks, feel free.  I kept this as a single article because in some cases there is cross-over or interaction between the capabilities. 
 
 ## Prerequisites
 
@@ -108,7 +110,7 @@ That is about as complex as it gets when talking about LI's. With RSI's things g
 
 ### This SHOULD be easy...
 
-Recall that a mutant only exists so long as there is an open handle to it; in an RSI runner, payload.exe contains the code to create the mutex.  It also spawns a new process and injects the shellcode into it, resulting in a beacon not from the payload.exe process but from the spawned process. After the beacon has been started, the payload.exe process exits, and with it, the handle to the mutex is closed; however there is still an active beacon on the system, and a subsequent attempt to run payload.exe will succeed because the mutant no longer exists. In order for this technique to work as intended the spawned process must have a handle to the mutant, as it is the spawned process that contains the beacon and thus is the one that matters. 
+Recall that a mutant only exists so long as there is an open handle to it; in an RSI runner, payload.exe contains the code to create the mutex.  It also spawns a new process and injects the shellcode into it, resulting in a beacon not from the payload.exe process but from the spawned process. After the beacon has been started, the payload.exe process exits, and with it, the handle to the mutex is closed; however there is still an active beacon on the system, and a subsequent attempt to run payload.exe will succeed because the mutant no longer exists. In order for this capabilitiy to work as intended the spawned process must have a handle to the mutant, as it is the spawned process that contains the beacon and thus is the one that matters. 
 
 The prototype for the CreateMutexW function is as follows(https://docs.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw):
 
