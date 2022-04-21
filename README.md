@@ -79,7 +79,7 @@ void main()
 
 That is the legitimate usage of a mutant; but how is that useful in an offensive capacity?
 
-### Mutants in implants
+### Mutants in Implants
 
 The usefulness of a mutant in a payload lies not in it's ability to control access to a shared resource, but in the fact that it is a system object that can be checked to see whether or not it exists. We choose to use a global mutant, as we want to check for the existence of the mutant accross all sessions as depending on what is happening operationally multiple sessions may be impacted.
 
@@ -205,7 +205,7 @@ In order to add some measure of tradecraft and prevent the existence of a named 
 
 <img width="201" alt="image" src="https://user-images.githubusercontent.com/91164728/164530926-2a9ebf99-2c60-41e7-9051-fa8c17a7c9ca.png">
 
-The POC that is provided demonstrates this fully fleshed out mutant capability in the PPID Spoofing RSI implementation; implementing the working mutant dynamic generation allowing the same user to run the same payload in different integrities in a LI shellcode runner will be left as an exercise to the reader. 
+The POC that is provided demonstrates this fully fleshed out mutant capability in the PPID Spoofing RSI implementation; implementing the working mutant name dynamic generation allowing the same user to run the same payload in different integrities in a LI shellcode runner will be left as an exercise to the reader. 
 
 ## Session 1 -> Session 0 Migration
 
