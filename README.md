@@ -5,7 +5,7 @@ This repo will cover several different capabilities that may be implemented inde
 
 **2. Session 1 -> Session 0 Migration** - A technique to obtain a System shell in Session 0 from a user session with Administrator privileges
 
-**3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit https://github.com/LloydLabs/delete-self-poc)
+**3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit belongs to [LloydLabs](https://github.com/LloydLabs/delete-self-poc))
 
 The primary focus of this post is to document the development process of each technique and to explain it in some detail, however code samples demonstrating each will also be provided.
 
@@ -57,7 +57,7 @@ This behavior of the RSI adds complications, but also opens the door to new capa
 
 ### What is a Mutant?
 
-A mutant is the Microsoft implementation of a mutex. From MSDN (https://docs.microsoft.com/en-us/windows/win32/sync/using-mutex-objects):
+A mutant is the Microsoft implementation of a mutex. From [MSDN](https://docs.microsoft.com/en-us/windows/win32/sync/using-mutex-objects):
 
 ``
 You can use a mutex object to protect a shared resource from simultaneous access by multiple threads or processes. Each thread must wait for ownership of the mutex before it can execute the code that accesses the shared resource. For example, if several threads share access to a database, the threads can use a mutex object to permit only one thread at a time to write to the database.
@@ -112,7 +112,7 @@ That is about as complex as it gets when talking about LI's. With RSI's things g
 
 Recall that a mutant only exists so long as there is an open handle to it; in an RSI runner, payload.exe contains the code to create the mutex.  It also spawns a new process and injects the shellcode into it, resulting in a beacon not from the payload.exe process but from the spawned process. After the beacon has been started, the payload.exe process exits, and with it, the handle to the mutex is closed; however there is still an active beacon on the system, and a subsequent attempt to run payload.exe will succeed because the mutant no longer exists. In order for this capabilitiy to work as intended the spawned process must have a handle to the mutant, as it is the spawned process that contains the beacon and thus is the one that matters. 
 
-The prototype for the CreateMutexW function is as follows(https://docs.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw):
+The prototype for the [CreateMutexW](https://docs.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw) function is as follows:
 
 ```C
 HANDLE CreateMutexW(
@@ -127,7 +127,7 @@ On the same page in the remarks section it is noted that:
 
 Armed with this knowledge, the path forward is fairly obvious; create the security structure, populate it appropriately, and pass the handle to the mutant to the spawned process via the CreateProcess call.  Of course it can't be that easy.
 
-The most common technique by which PPID Spoofing is implemented involves using UpdateProcThreadAttribute and the PROC_THREAD_ATTRIBUTE_PARENT_PROCESS attribute, specifying a handle to the intended parent process.  Per MSDN(https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute):
+The most common technique by which PPID Spoofing is implemented involves using UpdateProcThreadAttribute and the PROC_THREAD_ATTRIBUTE_PARENT_PROCESS attribute, specifying a handle to the intended parent process.  Per [MSDN](https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute):
 
 ```
 PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
@@ -143,7 +143,7 @@ So what happens when we try to pass the handle to the spawned process via Create
 
 ### Juggling Handles
 
-The stub for PROC_THREAD_ATTRIBUTE_PARENT_PROCESS notes that handles from the parent process are inherited by the child process.  If we can give the parent process we wish to spoof a handle to the mutant, it should be inherited by the spawned process. Enter DuplicateHandle(https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle):
+The stub for PROC_THREAD_ATTRIBUTE_PARENT_PROCESS notes that handles from the parent process are inherited by the child process.  If we can give the parent process we wish to spoof a handle to the mutant, it should be inherited by the spawned process. Enter [DuplicateHandle](https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle):
 
 ```C
 BOOL DuplicateHandle(
@@ -209,8 +209,17 @@ The POC that is provided demonstrates this fully fleshed out mutant capability i
 
 ## Session 1 -> Session 0 Migration
 
-When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out;  it was during all of the testing involving mutants that this error was finally realized which raised the question: is it possible to spawn a session 0 process from session X (a user session)?
+When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out;  it was during all of the testing involving mutants that this error was finally realized which raised the question: is it possible to spawn a session 0 process from session 1 (a user session)?
 
 Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens, integrity levels, and Win32API's involved in token manipulation. 
+
+## Where to start?
+
+The first question that needs to be asked and answered is, "What dictates what session a process that we create belongs to?".  Our obvious options are either it is the user who calls CreateProcess(), or it is the parent processes session when PPID Spoofing is done. Given that Winlogon lives in session 1 and that it is the target of our PPID spoofing, an assumption might be made that the resulting system beacon residing in session 1 is a consequence of this.  A simple test of this may be conducted by using a session 0 system integrity process in the PPID spoofing instead.  When targeting spoolsv for PPID spoofing two interesting things happen; 
+
+
+Winlogon is often used for escalation to system integrity from an Administrator process because it "exists in session 1"; however as [SpecterOps](https://posts.specterops.io/understanding-and-defending-against-access-token-theft-finding-alternatives-to-winlogon-exe-80696c8a73b) covers in incredible detail, the session that Winlogon resides in is not what opens the door to impersonation of its token. 
+
+
 
 
