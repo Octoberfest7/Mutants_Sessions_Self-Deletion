@@ -1,11 +1,11 @@
 # Fun with Mutants, Session Migration, and Self-Deleting Payloads
 This repo will cover several different capabilities that may be implemented independently or in conjunction with each other to provide additional functionality in payloads. These capabilties are as follows:
 
-**1. Mutants** - Means by which to prevent several instances of the payload running simultaneously 
+**1. [Mutants](#mutants)** - Means by which to prevent several instances of the payload running simultaneously 
 
-**2. Session 1 -> Session 0 Migration** - A technique to obtain a System shell in Session 0 from a user session with Administrator privileges
+**2. [Session 1 -> Session 0 Migration](#session-1---session-0-migration)** - A technique to obtain a System shell in Session 0 from a user session with Administrator privileges
 
-**3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit belongs to [LloydLabs](https://github.com/LloydLabs/delete-self-poc))
+**3. [Self-Deletion](#self-deletion)** - The ability to delete a file from disk when it is locked by an active process (original credit belongs to [LloydLabs](https://github.com/LloydLabs/delete-self-poc))
 
 The primary focus of this post is to document the development and/or implementation process of each technique and to explain it in some detail, however code samples demonstrating each will also be provided.
 
@@ -337,9 +337,98 @@ A large IOC of this technique is that it is abnormal for a child process to have
 
 The POC provided for this capability demonstrates everything walked through above with the exception of PPID spoofing.  Implementing PPID spoofing in conjunction with this capability is trivial and left to the reader to accomplish.
 
-# Self-Deletion
+## Self-Deletion
+### Background
 
+This is a capability that [LloydLabs](https://github.com/LloydLabs/delete-self-poc) created a POC for.  The idea is to delete a file that is locked on disk by a running process; this has interesting implications whether talking about a LI or an RSI shellcode runner.  With an RSI runner, Payload.exe will exit and thus be deletable after the beacon process has spawned, so there is not necessarily anything ground breaking here besides the fact that we can automate cleanup; however in a LI runner, Payload.exe is locked for as long as our beacon process exists, and in this case being able to delete Payload.exe from disk while maintaining our beacon in memory is an interesting option.  In situations where reflective loading and other means to start beacons entirely in memory are not possible and dropping a file to disk is unavoidable, being able to delete the initial payload and then place persistence elsewhere via the now-running beacon may assist in breaking up patterns and telemetry that would be better not handed so obviously to defenders. 
 
+The following is copied and pasted from the LloydLabs ReadMe describing how the POC works:
 
+```
+1. Open a HANDLE to the current running process, with DELETE access. Note, DELETE is only needed.
+2. Rename the primary file stream, :$DATA, using SetFileInformationByHandle to :wtfbbq.
+3. Close the HANDLE
+4. Open a HANDLE to the current process, set DeleteFile for the FileDispositionInfo class to TRUE.
+5. Close the HANDLE to trigger the file disposition
+6. Viola - the file is gone.
+```
 
+Seeing as the POC already exists, the code will not be covered in near as much detail here; only a specific few sections will be highlighted to address issues and demonstrate novel implementations.
 
+### Fixing a memory issue
+
+The ds_rename_handle function at line 14 of [main.c](https://github.com/LloydLabs/delete-self-poc/blob/main/main.c) contains an error, specifically on line 24 (RtlCopyMemory call).  The entire function is shown here (slightly modified to remove a definition stored in main.h):
+
+```C
+static
+BOOL
+ds_rename_handle(
+	HANDLE hHandle
+)
+{
+	FILE_RENAME_INFO fRename;
+	RtlSecureZeroMemory(&fRename, sizeof(fRename));
+
+	// set our FileNameLength and FileName to DS_STREAM_RENAME
+	LPWSTR lpwStream = L":wtfbbq";
+	fRename.FileNameLength = sizeof(lpwStream);
+	RtlCopyMemory(fRename.FileName, lpwStream, sizeof(lpwStream));
+
+	return SetFileInformationByHandle(hHandle, FileRenameInfo, &fRename, sizeof(fRename) + sizeof(lpwStream));
+}
+```
+
+The issue lies in that RtlCopyMemory attempts to move L":wtfbbq" into fRename.FileName.  [MSDN](https://docs.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info) has the definition for FILE_RENAME_INFO which reveals the problem:
+
+```C
+typedef struct _FILE_RENAME_INFO {
+  union {
+    BOOLEAN ReplaceIfExists;
+    DWORD   Flags;
+  } DUMMYUNIONNAME;
+  BOOLEAN ReplaceIfExists;
+  HANDLE  RootDirectory;
+  DWORD   FileNameLength;
+  WCHAR   FileName[1];
+} FILE_RENAME_INFO, *PFILE_RENAME_INFO;
+```
+There are only two bytes allocated for the FileName property of the structure (1 wchar @ 2 bytes ea), yet the program is stuffing 14 bytes (7 wchars @ 2 bytes each) into this space. This is a confusing structure that StackOverflow reveals has tripped up quite a few people and while the POC does function, it is better to fix this before using it in production.
+
+The length of lpwStream must be calculated and added to the length of the base FILE_RENAME_INFO structure, before calling malloc in order to allocate enough memory to hold the entire structure.  After that has been done the structure can be populated as before with the renamed stream before SetFileInformationByHandle() is called:
+
+![image](https://user-images.githubusercontent.com/91164728/164995364-2fe55527-517b-459a-819f-53da1b832595.png)
+
+With the memory issue fixed, discussion can proceed to the actual implementation of this code in a shellcode runner.
+
+### Weaponization
+
+Having Payload.exe delete itself may not always be the desired behaviour; to address this a few simple lines of code will look for any arguments to payload.exe and, should there be any (regardless of what they are), Payload.exe will not delete itself:
+
+```C
+    if (argc > 1)
+    {
+        ;
+    }
+    else
+    {
+        deleteme();
+    }
+```
+
+This opens the door to Payload.exe being reused in persistence scenarios, with the added benefit of being able to do some base-level obfuscation by specifying command line args to pass to it in the case of a scheduled task or service without any impact to the actual function of the shellcode runner (e.g. MSUpdater.exe /Check-all /Force-Update).
+
+In the case of a DLL, a few things have to be tweaked for the self-deletion tactic to succeed.  For the purposes of demonstration rundll32.exe will be used to run the DLL format shellcode runner.
+
+The original POC calls GetModuleFileNameW() in order to get the full path of the currently running process. This works just fine in a .exe implementation, but in a DLL where another process is loading and running the DLL (rundll32.exe in this instance), the original code returns the path to rundll32.exe (or whatever application was used to sideload our malicious DLL) whch we certainly do not want to delete.  In order to get the path of the actual DLL, the POC code will be modified to call GetModuleHandleEx(), passing it the memory address of a function within the DLL.  This API will return a handle to the DLL, which can then be passed to GetModuleFileName() as in the original in order to retrieve the full path of the DLL for use in the rest of the code.  Example code is shown below:
+
+![image](https://user-images.githubusercontent.com/91164728/164996799-c6fe6637-c0a8-4fae-bbf5-5c30369ed5ea.png)
+
+Making self-deletion optional as was done in the exe format is less straightforward in a DLL; a solution I came up with was to simply provide multiple entry points for the DLL, one of which calls the self-deletion function and another of which does not.  This can be played with and fleshed out more if needed.
+
+The POC provided for the self-deletion capability is identical to the operational implementation; the debugging lines were removed from the POC and functions collapsed into a single one, however it would be trivial to undo these changes.
+
+## Closing thoughts
+
+Thank you to all those who took the time to read what became a very lengthy writeup of two weeks or so worth of work.  There were a lot of issues that had to be dealt with that didn't make it into this post (porting all of the above to both LI and RSI shellcode runners, in exe and dll format, and successfully compiling to both x86 and x64).  I learned a lot about processes, memory, and C programming and ended up with some pretty cool bonus features for payloads along the way.  Hopefully this information was useful and helps others implement similar features in their work. 
+
+The POC's provided, as was addressed in each individual section, are generally parsed down and not fully fleshed out. This is intentional to avoid providing completely weaponized code so that should someone want to use these techniques they are required to do a little work themselves so as to better understand it.
