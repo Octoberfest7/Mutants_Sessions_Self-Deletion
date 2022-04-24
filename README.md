@@ -7,13 +7,13 @@ This repo will cover several different capabilities that may be implemented inde
 
 **3. Self-Deletion** - The ability to delete a file from disk when it is locked by an active process (original credit belongs to [LloydLabs](https://github.com/LloydLabs/delete-self-poc))
 
-The primary focus of this post is to document the development process of each technique and to explain it in some detail, however code samples demonstrating each will also be provided.
+The primary focus of this post is to document the development and/or implementation process of each technique and to explain it in some detail, however code samples demonstrating each will also be provided.
 
-This will be an exceptionally long post but I of course encourage you to read it all.  If that needs to be done in chunks, feel free.  I kept this as a single article because in some cases there is cross-over or interaction between the capabilities. 
+This will be an exceptionally long post but I of course encourage you to read it all.  If that needs to be done in chunks, feel free.  I am publishing this as a single article because the development process of these capabilities occurred in tandem around a common shellcode runner.
 
 ## Prerequisites
 
-This research was done with two different kinds of payloads in mind:
+This research was done with two different kinds ofshellcode runners in mind:
 
 1. Local injector (LI)
 2. Remote Spawn Injector (RSI)
@@ -24,13 +24,14 @@ A remote spawn injector differs in that the shellcode runner spawns a new proces
 
 A diagram showing each technique can be seen below:
 
-<img width="1407" alt="image" src="https://user-images.githubusercontent.com/91164728/164479478-063a1706-18d0-46df-b99e-f87cacb0fdf4.png">
+![image](https://user-images.githubusercontent.com/91164728/164955994-7bfcfa57-8959-4609-a314-4526fcbf11ab.png)
+
 
 There are a few things to address about the RSI graphic.
 
-It is not visually represented, but the call to VirtualAllocEx is listed, as new memory is allocated in the Notepad.exe process.  It should also be noted that Notepad.exe is an example in this case, not a recommended process to spawn for this kind of shellcode runner.
+It is not visually represented, but the call to VirtualAllocEx is listed, as new memory is allocated in the Calc.exe process.  It should also be noted that Calc.exe is an example in this case, not a recommended process to spawn for this kind of shellcode runner.
 
-Of note is the Explorer/Winlogon box with the "PPID Spoof" line to Notepad. This implementation of an RSI utilizes Parent Process ID spoofing as an additional evasion technique.  This technique is well documented and as such will not be commented upon except for as how it interacts with and pertains to the capabilities that are the subject of this post.
+Of note is the Explorer/Winlogon box with the "PPID Spoof" line to Calc. This implementation of an RSI utilizes Parent Process ID spoofing as an additional evasion technique.  This technique is well documented and as such will not be commented upon except for as how it interacts with and pertains to the capabilities that are the subject of this post.
 
 Explorer and Winlogon are jointly specified because this RSI contains logic to detect the process integrity in which it is running; if it is running in medium integrity, it chooses Explorer.exe as its parent process.  If it is running in high or system integrity it chooses Winlogon.
 
@@ -49,7 +50,7 @@ Normal cmd.exe = Medium integrity = Medium integrity beacon
 Administrator cmd.exe = High integrity = SYSTEM integrity beacon
 ```
 
-The RSI shellcode runner returns a system integrity beacon when run as an Administrator because as part of the PPID spoofing process, Winlogon's token is inherited by notepad.exe.  This must be kept in mind, as depending on the kind of access one wants, different shellcode runners may be more appropriate than others (i.e. you have code execution as a domain admin, if you run the LI shellcode runner you will get back a high integrity beacon in a domain context, if you run the RSI you will get back a system integrity beacon on that machine).
+The RSI shellcode runner returns a system integrity beacon when run as an Administrator because as part of the PPID spoofing process, Winlogon's token is inherited by Calc.exe.  This must be kept in mind, as depending on the kind of access one wants, different shellcode runners may be more appropriate than others (i.e. you have code execution as a domain admin, if you run the LI shellcode runner you will get back a high integrity beacon in a domain context, if you run the RSI you will get back a system integrity beacon on that machine).
 
 This behavior of the RSI adds complications, but also opens the door to new capabilities as will be seen later.
 
@@ -163,18 +164,18 @@ Most typical examples of this API that you will find use it in order to "get" a 
 
 After calling DuplicateHandle() the parent process also has a handle to the mutex, and when CreateProcess is called utilizing PPID spoofing the spawned process inherits the handle to the mutex as desired.
 
-<img width="842" alt="image" src="https://user-images.githubusercontent.com/91164728/164520239-a18eae5c-e97a-46a7-a873-88f5cc8e3b5f.png">
+![image](https://user-images.githubusercontent.com/91164728/164956127-c0c9e4e7-dcb5-49b3-a296-7ed91b51e196.png)
 
-There is however yet another problem. After payload.exe finishes spawning and injecting Notepad.exe, it exits, closing its handle to the mutant.  When the beacon is eventually exited, its handle to the mutant is closed. Upon trying to run the payload again, it will not create a new beacon because the parent process still has its handle to the mutant.  In order to remove the handle DuplicateHandle() must be called again, this time in reverse, and with the DUPLICATE_CLOSE_SOURCE flag specified.  This will duplicate the handle that the parent process holds to the mutant back to payload.exe and in doing so close the handle that the parent holds.  Payload.exe will now have two handles to the mutex, both of which will exit when it does.  The final sequence of events regarding the handles is as follows:
+There is however yet another problem. After payload.exe finishes spawning and injecting Calc.exe, it exits, closing its handle to the mutant.  When the beacon is eventually exited, its handle to the mutant is closed. Upon trying to run the payload again, it will not create a new beacon because the parent process still has its handle to the mutant.  In order to remove the handle DuplicateHandle() must be called again, this time in reverse, and with the DUPLICATE_CLOSE_SOURCE flag specified.  This will duplicate the handle that the parent process holds to the mutant back to payload.exe and in doing so close the handle that the parent holds.  Payload.exe will now have two handles to the mutex, both of which will exit when it does.  The final sequence of events regarding the handles is as follows:
 
-<img width="864" alt="image" src="https://user-images.githubusercontent.com/91164728/164522155-c04d157c-6c25-4ab5-b1bf-0e23003a8c77.png">
+![image](https://user-images.githubusercontent.com/91164728/164956056-c3f2451f-6d62-4048-a1d5-41e90c913fc9.png)
 
 1. CreateMutex() is called to create the mutant
 2. DuplicateHandle() is called to pass the mutant handle to the parent process
-3. CreateProcess is called with PPID Spoofing, passing the mutant handle to Notepad.exe
+3. CreateProcess is called with PPID Spoofing, passing the mutant handle to Calc.exe
 4. DuplicateHandle() is called a second time with the DUPLICATE_CLOSE_SOURCE flag to remove the handle from the parent process
 5. Payload.exe exits, closing its handles to the mutant
-6. Notepad.exe holds the only remaining open handle to the mutant.  When the beacon exits, the mutant will be removed, and the payload may successfully run again.
+6. Calc.exe holds the only remaining open handle to the mutant.  When the beacon exits, the mutant will be removed, and the payload may successfully run again.
 
 Success!
 
@@ -209,13 +210,21 @@ The POC that is provided demonstrates this fully fleshed out mutant capability i
 
 ## Session 1 -> Session 0 Migration
 
-When the RSI shellcode runner was developed and the ability to receive a beacon as system from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out;  it was during all of the testing involving mutants that this error was finally realized which raised the question: is it possible to spawn a session 0 process from session 1 (a user session)?
+When the RSI shellcode runner was developed and the ability to receive a beacon with system integrity from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out; the flaw in this logic being that the system integrity Calc.exe spawned by the RSI runner still exists in session 1, or a user session.  When a user logs out, all of the processes belonging to their user session exit (as a side note, locking the user session or switching users does not exit the user session and all of the user's processes continue to run), and as such Calc.exe exits along with the beacon. It was during all of the testing involving mutants that this error was finally realized, which raised the question: is it possible to spawn a session 0 process from session 1 (a user session)?
 
 Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens, integrity levels, and Win32API's involved in token manipulation. 
 
 ## Where to start?
 
-The first question that needs to be asked and answered is, "What dictates what session a process that we create belongs to?".  Our obvious options are either it is the user who calls CreateProcess(), or it is the parent processes session when PPID Spoofing is done. Given that Winlogon lives in session 1 and that it is the target of our PPID spoofing, an assumption might be made that the resulting system beacon residing in session 1 is a consequence of this.  A simple test of this may be conducted by using a session 0 system integrity process in the PPID spoofing instead.  When targeting spoolsv for PPID spoofing two interesting things happen; 
+The first question that needs to be asked and answered is, "What dictates what session a process that we create belongs to?".  Our most obvious options are either:
+
+1. It is the user who calls CreateProcess() 
+2. It is the parent processes session when PPID Spoofing is done. 
+
+Given that Winlogon lives in session 1 and that it is the target of our PPID spoofing, an assumption might be made that the resulting system beacon resides in session 1 as a consequence.  A simple test of this may be conducted by using a session 0 system integrity process in the PPID spoofing instead.  When targeting spoolsv for PPID spoofing, the Calc.exe process spawns as system however it is still a session 1 process:
+
+![image](https://user-images.githubusercontent.com/91164728/164956285-32cc8013-6389-4b6f-ad95-ad72e99c9237.png)
+
 
 
 Winlogon is often used for escalation to system integrity from an Administrator process because it "exists in session 1"; however as [SpecterOps](https://posts.specterops.io/understanding-and-defending-against-access-token-theft-finding-alternatives-to-winlogon-exe-80696c8a73b) covers in incredible detail, the session that Winlogon resides in is not what opens the door to impersonation of its token. 
