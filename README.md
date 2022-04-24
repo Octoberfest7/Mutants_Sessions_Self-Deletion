@@ -1,5 +1,5 @@
 # Fun with Mutants, Session Migration, and Self-Deleting Payloads
-This repo will cover several different capabilities that may be implemented independently or in conjunction with each other to provide additional functionality in payloads. These capabilties are as follows:
+This repo will cover several different capabilities that may be implemented independently or in conjunction with each other to provide additional functionality in payloads. These capabilities are as follows:
 
 **1. [Mutants](#mutants)** - Means by which to prevent several instances of the payload running simultaneously 
 
@@ -13,7 +13,7 @@ This will be an exceptionally long post but I of course encourage you to read it
 
 ## Prerequisites
 
-This research was done with two different kinds ofshellcode runners in mind:
+This research was done with two different kinds of shellcode runners in mind:
 
 1. Local injector (LI)
 2. Remote Spawn Injector (RSI)
@@ -33,7 +33,7 @@ It is not visually represented, but the call to VirtualAllocEx is listed, as new
 
 Of note is the Explorer/Winlogon box with the "PPID Spoof" line to Calc. This implementation of an RSI utilizes Parent Process ID spoofing as an additional evasion technique.  This technique is well documented and as such will not be commented upon except for as how it interacts with and pertains to the capabilities that are the subject of this post.
 
-Explorer and Winlogon are jointly specified because this RSI contains logic to detect the process integrity in which it is running; if it is running in medium integrity, it chooses Explorer.exe as its parent process.  If it is running in high or system integrity it chooses Winlogon.
+Explorer and winlogon are jointly specified because this RSI contains logic to detect the process integrity in which it is running; if it is running in medium integrity, it chooses explorer.exe as its parent process.  If it is running in high or system integrity it chooses winlogon.
 
 This design choice has interesting consequences.  
 
@@ -50,7 +50,7 @@ Normal cmd.exe = Medium integrity = Medium integrity beacon
 Administrator cmd.exe = High integrity = SYSTEM integrity beacon
 ```
 
-The RSI shellcode runner returns a system integrity beacon when run as an Administrator because as part of the PPID spoofing process, Winlogon's token is inherited by Calc.exe.  This must be kept in mind, as depending on the kind of access one wants, different shellcode runners may be more appropriate than others (i.e. you have code execution as a domain admin, if you run the LI shellcode runner you will get back a high integrity beacon in a domain context, if you run the RSI you will get back a system integrity beacon on that machine).
+The RSI shellcode runner returns a system integrity beacon when run as an Administrator because as part of the PPID spoofing process, winlogon's token is inherited by Calc.exe.  This must be kept in mind, as depending on the kind of access one wants, different shellcode runners may be more appropriate than others (i.e. you have code execution as a domain admin, if you run the LI shellcode runner you will get back a high integrity beacon in a domain context, if you run the RSI you will get back a system integrity beacon on that machine).
 
 This behavior of the RSI adds complications, but also opens the door to new capabilities as will be seen later.
 
@@ -66,7 +66,7 @@ You can use a mutex object to protect a shared resource from simultaneous access
 
 Mutants can be created in either a session or a global context by means of attaching the prefix "Local\" or "Global\" respectively.
 
-The following code snippet will create a Global mutex which can then be observed using Process Explorer:
+The following code snippet will create a Global mutex which can then be observed using ProcessExplorer:
 ```C
 void main()
 {
@@ -82,14 +82,14 @@ That is the legitimate usage of a mutant; but how is that useful in an offensive
 
 ### Mutants in Implants
 
-The usefulness of a mutant in a payload lies not in its ability to control access to a shared resource, but in the fact that it is a system object that can be checked to see whether or not it exists. We choose to use a global mutant, as we want to check for the existence of the mutant accross all sessions as depending on what is happening operationally multiple sessions may be impacted.
+The usefulness of a mutant in a payload lies not in its ability to control access to a shared resource, but in the fact that it is a system object that can be checked to see whether or not it exists. We choose to use a global mutant, as we want to check for the existence of the mutant across all sessions as depending on what is happening operationally multiple sessions may be impacted.
 
 There are a myriad of different ways malware can be delivered, executed, and persistence set.  Each time malware runs on a target computer it performs actions that may be detected by AV engines, EDR's, and/or defenders, and as such care should be taken to ensure that 
-1. Only necesssary actions are performed
+1. Only necessary actions are performed
 2. Those necessary actions are done in an OPSEC safe manner
 3. These actions are not repeated unless necessary.  
 
-Mutants provide a means to address the 3rd line item.  This is a protection against poorly set persistence or unforseen consequences; having several instances of our implant running simultaneously on a single machine increases the IOC's produced and the likelihood of detection.  The base implementation of mutants for this purpose is very simple: On runtime, the implant calls an API to create a named mutex.  Based on the result of that API call, the implant determines whether it successfully created a new mutant, or if a mutant of the same name already exists. A mutant will persist on a machine until the last open handle to it has been closed.  If the mutant already exists, a handle to it must be open, which means the implant must already be running on the machine.
+Mutants provide a means to address the 3rd line item.  This is a protection against poorly set persistence or unforeseen consequences; having several instances of our implant running simultaneously on a single machine increases the IOC's produced and the likelihood of detection.  The base implementation of mutants for this purpose is very simple: On runtime, the implant calls an API to create a named mutex.  Based on the result of that API call, the implant determines whether it successfully created a new mutant, or if a mutant of the same name already exists. A mutant will persist on a machine until the last open handle to it has been closed.  If the mutant already exists, a handle to it must be open, which means the implant must already be running on the machine.
 
 A basic implementation of this can be seen in this code sample:
 ```C
@@ -111,7 +111,7 @@ That is about as complex as it gets when talking about LI's. With RSI's things g
 
 ### This SHOULD be easy...
 
-Recall that a mutant only exists so long as there is an open handle to it; in an RSI runner, payload.exe contains the code to create the mutex.  It also spawns a new process and injects the shellcode into it, resulting in a beacon not from the payload.exe process but from the spawned process. After the beacon has been started, the payload.exe process exits, and with it, the handle to the mutex is closed; however there is still an active beacon on the system, and a subsequent attempt to run payload.exe will succeed because the mutant no longer exists. In order for this capabilitiy to work as intended the spawned process must have a handle to the mutant, as it is the spawned process that contains the beacon and thus is the one that matters. 
+Recall that a mutant only exists so long as there is an open handle to it; in an RSI runner, payload.exe contains the code to create the mutex.  It also spawns a new process and injects the shellcode into it, resulting in a beacon not from the payload.exe process but from the spawned process. After the beacon has been started, the payload.exe process exits, and with it, the handle to the mutex is closed; however there is still an active beacon on the system, and a subsequent attempt to run payload.exe will succeed because the mutant no longer exists. In order for this capability to work as intended the spawned process must have a handle to the mutant, as it is the spawned process that contains the beacon and thus is the one that matters. 
 
 The prototype for the [CreateMutexW](https://docs.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw) function is as follows:
 
@@ -162,7 +162,7 @@ Most typical examples of this API that you will find use it in order to "get" a 
 
 <img width="677" alt="image" src="https://user-images.githubusercontent.com/91164728/164518223-01cb26d8-6bfb-4a06-a701-4284ff58b64e.png">
 
-After calling DuplicateHandle() the parent process also has a handle to the mutex, and when CreateProcess is called utilizing PPID spoofing the spawned process inherits the handle to the mutex as desired.
+After calling DuplicateHandle() the parent process also has a handle to the mutex, and when CreateProcess() is called utilizing PPID spoofing the spawned process inherits the handle to the mutex as desired.
 
 ![image](https://user-images.githubusercontent.com/91164728/164956127-c0c9e4e7-dcb5-49b3-a296-7ed91b51e196.png)
 
@@ -183,7 +183,7 @@ Success!
 
 We have successfully implemented mutants into the RSI model shellcode runner, preventing multiple instances of payload.exe from running.  Note that it does NOT prevent additional beacons on the machine created via different methods, like through Cobalt Strikes Shinject command.  What are the limitations of this capability as it has been implemented?
 
-The shellcode runner logic checks for the existence of a specific named mutant; if the mutant name is static and hardcoded into the runner, it would prevent, for example, the payload being able to be ran by different users on the same machine.  This is undesirable as one might obtain code execution in a privileged context and wish to use it to kick another beacon.  Another possible limitation exists when talking about alternate communication channels; suppose there is a long standing, infrequently calling back DNS beacon that has been maintained until the time comes for active effects against the machine, at which point an HTTPS beacon is desired due to their vastly superior data transfering abilities. If the mutant name is hardcoded into each generated payload, this alternate channel beacon would be prevented from running by the presence of the mutant from the DNS beacon.
+The shellcode runner logic checks for the existence of a specific named mutant; if the mutant name is static and hardcoded into the runner, it would prevent, for example, the payload being able to be ran by different users on the same machine.  This is undesirable as one might obtain code execution in a privileged context and wish to use it to kick another beacon.  Another possible limitation exists when talking about alternate communication channels; suppose there is a long standing, infrequently calling back DNS beacon that has been maintained until the time comes for active effects against the machine, at which point an HTTPS beacon is desired due to their vastly superior data transferring abilities. If the mutant name is hardcoded into each generated payload, this alternate channel beacon would be prevented from running by the presence of the mutant from the DNS beacon.
 
 To address these issues name generation for the mutant has been made dynamic. The mutant name will now comprise of two parts:
 
@@ -206,7 +206,7 @@ In order to add some measure of tradecraft and prevent the existence of a named 
 
 <img width="201" alt="image" src="https://user-images.githubusercontent.com/91164728/164530926-2a9ebf99-2c60-41e7-9051-fa8c17a7c9ca.png">
 
-The POC that is provided demonstrates a partial implementation of the mutant capability as described here; it does not account for a user running the same payload in a normal vs an elevated context, nor the special cirumstance encountered in the RSI runner where the payload is ran by a user, but the beacon comes back as system.  These issues have been addressed in the operational implementation of this capability. 
+The POC that is provided demonstrates a partial implementation of the mutant capability as described here; it does not account for a user running the same payload in a normal vs an elevated context, nor the special circumstance encountered in the RSI runner where the payload is ran by a user, but the beacon comes back as system.  These issues have been addressed in the operational implementation of this capability and left as an exercise to the reader.
 
 ## Session 1 -> Session 0 Migration
 ### Background
@@ -225,11 +225,11 @@ When running cmd.exe as an Administrator there are a laundry list of privileges 
 
 It should be noted that as long as a privilege is listed, it may be used; it may be listed as disabled currently, but enabling it is a trivial task. 
 
-Of particular use are the SeDebugPrivilege and the SeImpersonatePrivilege.  With these (after they are both enabled), an individual can successfully open a handle to a system integrity process (and token) and impersonate it's token, gaining system level integrity.  After playing with this ability a bit, one will notice that some system integrity processes seem to be more accessible than others; this quirk was dialed in on by the author of the SpecterOps article, who found that the critical difference lies in the TokenOwner property of a process.  This can be observed in the following image comparing winlogon.exe with spoolsv.exe:
+Of particular use are the SeDebugPrivilege and the SeImpersonatePrivilege.  With these (after they are both enabled), an individual can successfully open a handle to a system integrity process (and token) and impersonate its token, gaining system level integrity.  After playing with this ability a bit, one will notice that some system integrity processes seem to be more accessible than others; this quirk was dialed in on by the author of the SpecterOps article, who found that the critical difference lies in the TokenOwner property of a process.  This can be observed in the following image comparing winlogon.exe with spoolsv.exe:
 
 ![image](https://user-images.githubusercontent.com/91164728/164984441-7b67ce40-4f79-45d6-9246-4364aa26ff16.png)
 
-Note that the owner of winlogon is "Administrators", while the owner of spoolsv is "LogonSessionId_0...". The impact on our work here is that from an Administrator prompt a handle can be opened to winlogon and it's token impersonated, and while a handle can be opened to spoolsv, it's token may not be opened in order to impersonate it.  If one were to want to access the token of spoolsv, or another system integrity process's that is not owned by Administrators, they will first need to impersonate system (most easily done by opening winlogons process/token and calling ImpersonateLoggedOnUser()) before they will be able to do so.  
+Note that the owner of winlogon is "Administrators", while the owner of spoolsv is "LogonSessionId_0...". The impact on our work here is that from an Administrator prompt a handle can be opened to winlogon and it's token impersonated, and while a handle can be opened to spoolsv, it's token may not be opened in order to impersonate it.  If one were to want to access the token of spoolsv, or another system integrity process's that is not owned by Administrators, they will first need to impersonate system (most easily done by opening winlogon's process/token and calling ImpersonateLoggedOnUser()) before they will be able to do so.  
 
 Another wrinkle comes in when PPL protected processes are encountered.  The specifics of PPL protection will not be covered here, but for our purposes PPL protection can be summarized as an additional layer of security/protection on a process that greatly inhibits userland interaction with it.  PPL protection can be observed on several system processes, to include wininit.exe, smss.exe, MsMpEng.exe, and services.exe.  Smss.exe is viewed in ProcessExplorer where its PPL status can be observed as "PsProtectedSignerWinTcb-Light":
 
@@ -273,7 +273,7 @@ As can be seen in this screenshot of the console output of this code, system is 
 
 ### More research needed
 
-A google search turned up some relevant StackOverflow posts about this topic ([Here](https://stackoverflow.com/questions/66226029/windows-create-a-process-in-session-0-using-createprocesswithtokenw) and [Here](https://stackoverflow.com/questions/38427094/createprocessasuser-works-createprocesswithtokenw-does-not/38442543#38442543)) where an exceptionally knowledgable user named RbMm provided some much needed and seemingly otherwise hard to come by information.  
+A google search turned up some relevant StackOverflow posts about this topic ([Here](https://stackoverflow.com/questions/66226029/windows-create-a-process-in-session-0-using-createprocesswithtokenw) and [Here](https://stackoverflow.com/questions/38427094/createprocessasuser-works-createprocesswithtokenw-does-not/38442543#38442543)) where an exceptionally knowledgeable user named RbMm provided some much needed and seemingly otherwise hard to come by information.  
 
 Two additional API's exist when it comes to creating a process as a different user; CreateProcessWithToken() and CreateProcessAsUser(). The above StackOverflow links delve heavily into this and ultimately reveal that CreateProcessWithToken() is in fact a wrapper for CreateProcessAsUser(), and as part of the function call it sets the SessionId back to the original session of the calling process; all this means that for our purposes, if we want to create a process with a session id different than that of our calling process, we need to use CreateProcessAsUser() and do a little more work manually.  [This](https://stackoverflow.com/questions/39238086/running-process-in-system-context) StackOverflow post, again from RbMm, provides more critical information:
 
@@ -340,7 +340,7 @@ The POC provided for this capability demonstrates everything walked through abov
 ## Self-Deletion
 ### Background
 
-This is a capability that [LloydLabs](https://github.com/LloydLabs/delete-self-poc) created a POC for.  The idea is to delete a file that is locked on disk by a running process; this has interesting implications whether talking about a LI or an RSI shellcode runner.  With an RSI runner, Payload.exe will exit and thus be deletable after the beacon process has spawned, so there is not necessarily anything ground breaking here besides the fact that we can automate cleanup; however in a LI runner, Payload.exe is locked for as long as our beacon process exists, and in this case being able to delete Payload.exe from disk while maintaining our beacon in memory is an interesting option.  In situations where reflective loading and other means to start beacons entirely in memory are not possible and dropping a file to disk is unavoidable, being able to delete the initial payload and then place persistence elsewhere via the now-running beacon may assist in breaking up patterns and telemetry that would be better not handed so obviously to defenders. 
+This is a capability that [LloydLabs](https://github.com/LloydLabs/delete-self-poc) created a POC for.  The idea is to delete a file that is locked on disk by a running process; this has interesting implications whether talking about a LI or an RSI shellcode runner.  With an RSI runner, Payload.exe will exit and thus be able to be deleted after the beacon process has spawned, so there is not necessarily anything ground breaking here besides the fact that we can automate cleanup; however in a LI runner, Payload.exe is locked for as long as our beacon process exists, and in this case being able to delete Payload.exe from disk while maintaining our beacon in memory is an interesting option.  In situations where reflective loading and other means to start beacons entirely in memory are not possible and dropping a file to disk is unavoidable, being able to delete the initial payload and then place persistence elsewhere via the now-running beacon may assist in breaking up patterns and telemetry that would be better not handed so obviously to defenders. 
 
 The following is copied and pasted from the LloydLabs ReadMe describing how the POC works:
 
@@ -392,7 +392,7 @@ typedef struct _FILE_RENAME_INFO {
   WCHAR   FileName[1];
 } FILE_RENAME_INFO, *PFILE_RENAME_INFO;
 ```
-There are only two bytes allocated for the FileName property of the structure (1 wchar @ 2 bytes ea), yet the program is stuffing 14 bytes (7 wchars @ 2 bytes each) into this space. This is a confusing structure that StackOverflow reveals has tripped up quite a few people and while the POC does function, it is better to fix this before using it in production.
+There are only two bytes allocated for the FileName property of the structure (1 wchar @ 2 bytes each), yet the program is stuffing 14 bytes (7 wchars @ 2 bytes each) into this space. This is a confusing structure that StackOverflow reveals has tripped up quite a few people and while the POC does function, it is better to fix this before using it in production.
 
 The length of lpwStream must be calculated and added to the length of the base FILE_RENAME_INFO structure, before calling malloc in order to allocate enough memory to hold the entire structure.  After that has been done the structure can be populated as before with the renamed stream before SetFileInformationByHandle() is called:
 
@@ -402,7 +402,7 @@ With the memory issue fixed, discussion can proceed to the actual implementation
 
 ### Weaponization
 
-Having Payload.exe delete itself may not always be the desired behaviour; to address this a few simple lines of code will look for any arguments to payload.exe and, should there be any (regardless of what they are), Payload.exe will not delete itself:
+Having Payload.exe delete itself may not always be the desired behavior; to address this a few simple lines of code will look for any arguments to payload.exe and, should there be any (regardless of what they are), Payload.exe will not delete itself:
 
 ```C
     if (argc > 1)
@@ -419,7 +419,7 @@ This opens the door to Payload.exe being reused in persistence scenarios, with t
 
 In the case of a DLL, a few things have to be tweaked for the self-deletion tactic to succeed.  For the purposes of demonstration rundll32.exe will be used to run the DLL format shellcode runner.
 
-The original POC calls GetModuleFileNameW() in order to get the full path of the currently running process. This works just fine in a .exe implementation, but in a DLL where another process is loading and running the DLL (rundll32.exe in this instance), the original code returns the path to rundll32.exe (or whatever application was used to sideload our malicious DLL) whch we certainly do not want to delete.  In order to get the path of the actual DLL, the POC code will be modified to call GetModuleHandleEx(), passing it the memory address of a function within the DLL.  This API will return a handle to the DLL, which can then be passed to GetModuleFileName() as in the original in order to retrieve the full path of the DLL for use in the rest of the code.  Example code is shown below:
+The original POC calls GetModuleFileNameW() in order to get the full path of the currently running process. This works just fine in a .exe implementation, but in a DLL where another process is loading and running the DLL (rundll32.exe in this instance), the original code returns the path to rundll32.exe (or whatever application was used to sideload our malicious DLL) which we certainly do not want to delete.  In order to get the path of the actual DLL, the POC code will be modified to call GetModuleHandleEx(), passing it the memory address of a function within the DLL.  This API will return a handle to the DLL, which can then be passed to GetModuleFileName() as in the original in order to retrieve the full path of the DLL for use in the rest of the code.  Example code is shown below:
 
 ![image](https://user-images.githubusercontent.com/91164728/164996799-c6fe6637-c0a8-4fae-bbf5-5c30369ed5ea.png)
 
@@ -429,6 +429,6 @@ The POC provided for the self-deletion capability is identical to the operationa
 
 ## Closing thoughts
 
-Thank you to all those who took the time to read what became a very lengthy writeup of two weeks or so worth of work.  There were a lot of issues that had to be dealt with that didn't make it into this post (porting all of the above to both LI and RSI shellcode runners, in exe and dll format, and successfully compiling to both x86 and x64).  I learned a lot about processes, memory, and C programming and ended up with some pretty cool bonus features for payloads along the way.  Hopefully this information was useful and helps others implement similar features in their work. 
+Thank you to all those who took the time to read what became a very lengthy writeup of two weeks or so worth of work.  There were a lot of issues that had to be dealt with that didn't make it into this post (porting all of the above to both LI and RSI shellcode runners, in exe and DLL format, and successfully compiling to both x86 and x64).  I learned a lot about processes, memory, and C programming and ended up with some pretty cool bonus features for payloads along the way.  Hopefully this information was useful and helps others implement similar features in their work. 
 
 The POC's provided, as was addressed in each individual section, are generally parsed down and not fully fleshed out. This is intentional to avoid providing completely weaponized code so that should someone want to use these techniques they are required to do a little work themselves so as to better understand it.
