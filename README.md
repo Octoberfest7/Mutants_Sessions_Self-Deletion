@@ -158,7 +158,7 @@ BOOL DuplicateHandle(
 );
 ```
 
-Most typical examples of this API that you will find use it in order to "get" a handle from another process or to duplicate a handle within the local process. In our case we will use it to "give" the payload processes mutant handle to the parent process as shown below
+Most typical examples of this API that you will find use it in order to "get" a handle from another process or to duplicate a handle within the local process. In our case we will use it to "give" the payload process's mutant handle to the parent process as shown below
 
 <img width="677" alt="image" src="https://user-images.githubusercontent.com/91164728/164518223-01cb26d8-6bfb-4a06-a701-4284ff58b64e.png">
 
@@ -206,28 +206,139 @@ In order to add some measure of tradecraft and prevent the existence of a named 
 
 <img width="201" alt="image" src="https://user-images.githubusercontent.com/91164728/164530926-2a9ebf99-2c60-41e7-9051-fa8c17a7c9ca.png">
 
-The POC that is provided demonstrates this fully fleshed out mutant capability in the PPID Spoofing RSI implementation; implementing the working mutant name dynamic generation allowing the same user to run the same payload in different integrities in a LI shellcode runner will be left as an exercise to the reader. 
+The POC that is provided demonstrates a partial implementation of the mutant capability as described here; it does not account for a user running the same payload in a normal vs an elevated context, nor the special cirumstance encountered in the RSI runner where the payload is ran by a user, but the beacon comes back as system.  These issues have been addressed in the operational implementation of this capability. 
 
 ## Session 1 -> Session 0 Migration
+### Background
 
-When the RSI shellcode runner was developed and the ability to receive a beacon with system integrity from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  A (wrong) assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out; the flaw in this logic being that the system integrity Calc.exe spawned by the RSI runner still exists in session 1, or a user session.  When a user logs out, all of the processes belonging to their user session exit (as a side note, locking the user session or switching users does not exit the user session and all of the user's processes continue to run), and as such Calc.exe exits along with the beacon. It was during all of the testing involving mutants that this error was finally realized, which raised the question: is it possible to spawn a session 0 process from session 1 (a user session)?
+When the RSI shellcode runner was developed and the ability to receive a system integrity beacon from a high integrity prompt observed, a false sense of security set in due to a failure to differentiate system ***integrity*** and the system ***session***.  An assumption was made that because the beacon was running as system it would persist even after the user who executed the payload logged out; the flaw in this logic being that the system integrity Calc.exe spawned by the RSI runner still exists in session 1, or a user's session.  When a user logs out, all of the processes belonging to their user session exit (as a side note, locking the user session or switching users does not exit the user session and all of the user's processes continue to run), and as such Calc.exe exits taking the beacon with it. Now aware of this problem, the question can be asked: is it possible to spawn a session 0 process from a user session?
 
-Typically to run a beacon in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens, integrity levels, and Win32API's involved in token manipulation. 
+Typically to run a process in session 0 a service is created to run as system, however I was curious to find out if there was a way to do so without creating hard persistence on the machine.  What followed was a long and painful journey into process tokens, integrity levels, and Win32API's involved in token manipulation. 
 
-## Where to start?
+### A quick primer on system processes
 
-The first question that needs to be asked and answered is, "What dictates what session a process that we create belongs to?".  Our most obvious options are either:
+We are going to be talking about impersonating, duplicating, and modifying the token of system integrity processes.  Because nothing can ever be easy, there are some complications and idiosyncrasies that need to be addressed.  This article by [SpecterOps](https://posts.specterops.io/understanding-and-defending-against-access-token-theft-finding-alternatives-to-winlogon-exe-80696c8a73b) is a great exploration of this topic and was referenced during this work.  
+
+When running cmd.exe as an Administrator there are a laundry list of privileges available for use: 
+
+![image](https://user-images.githubusercontent.com/91164728/164984164-9b115d46-0754-4b18-90db-abb4d7285302.png)
+
+It should be noted that as long as a privilege is listed, it may be used; it may be listed as disabled currently, but enabling it is a trivial task. 
+
+Of particular use are the SeDebugPrivilege and the SeImpersonatePrivilege.  With these (after they are both enabled), an individual can successfully open a handle to a system integrity process (and token) and impersonate it's token, gaining system level integrity.  After playing with this ability a bit, one will notice that some system integrity processes seem to be more accessible than others; this quirk was dialed in on by the author of the SpecterOps article, who found that the critical difference lies in the TokenOwner property of a process.  This can be observed in the following image comparing winlogon.exe with spoolsv.exe:
+
+![image](https://user-images.githubusercontent.com/91164728/164984441-7b67ce40-4f79-45d6-9246-4364aa26ff16.png)
+
+Note that the owner of winlogon is "Administrators", while the owner of spoolsv is "LogonSessionId_0...". The impact on our work here is that from an Administrator prompt a handle can be opened to winlogon and it's token impersonated, and while a handle can be opened to spoolsv, it's token may not be opened in order to impersonate it.  If one were to want to access the token of spoolsv, or another system integrity process's that is not owned by Administrators, they will first need to impersonate system (most easily done by opening winlogons process/token and calling ImpersonateLoggedOnUser()) before they will be able to do so.  
+
+Another wrinkle comes in when PPL protected processes are encountered.  The specifics of PPL protection will not be covered here, but for our purposes PPL protection can be summarized as an additional layer of security/protection on a process that greatly inhibits userland interaction with it.  PPL protection can be observed on several system processes, to include wininit.exe, smss.exe, MsMpEng.exe, and services.exe.  Smss.exe is viewed in ProcessExplorer where its PPL status can be observed as "PsProtectedSignerWinTcb-Light":
+
+![image](https://user-images.githubusercontent.com/91164728/164984761-90833417-1096-4274-b7cf-e07b03672756.png)
+
+There are a few things to note about PPL protection and it's impact on our work:
+
+1. PPL protection limits the permissions with which a handle to a process may be opened to PROCESS_QUERY_LIMITED_INFORMATION.
+
+	A. PPID spoofing requires PROCESS_CREATE_PROCESS access; as a result, PPID spoofing may not be done using a PPL protected process.
+	
+	B. PROCESS_QUERY_LIMITED_INFORMATION DOES allow for token duplication and impersonation.
+	
+2. Strangely, many of the PPL protected processes belong to Administrators and reside in session 0, which means handles CAN be opened to them without needing to first impersonate system.
+3. PPL protection extends to memory as well; one cannot inject into a PPL protected process or end a PPL protected process from userland.  
+
+### Where to start?
+
+The first question to answer is, "What dictates what session a process belongs to?".  In our situation the most obvious options are either:
 
 1. It is the user who calls CreateProcess() 
-2. It is the parent processes session when PPID Spoofing is done. 
+2. It is the parent process when PPID Spoofing is done
 
-Given that Winlogon lives in session 1 and that it is the target of our PPID spoofing, an assumption might be made that the resulting system beacon resides in session 1 as a consequence.  A simple test of this may be conducted by using a session 0 system integrity process in the PPID spoofing instead.  When targeting spoolsv for PPID spoofing, the Calc.exe process spawns as system however it is still a session 1 process:
+Given that winlogon lives in session 1 and that it is the target of our PPID spoofing, an assumption might be made that calc.exe will also spawn in session 1 as a result.  A simple test of this may be conducted by using a session 0 system integrity process like spoolsv.exe for PPID spoofing instead; in doing so we find that Calc.exe still resides in session 1:
 
 ![image](https://user-images.githubusercontent.com/91164728/164956285-32cc8013-6389-4b6f-ad95-ad72e99c9237.png)
 
+So it doesn't seem to be the assigned parent process that impacts the child process's session.  Time to look at our other possibility.  The seemingly simplest solution is to gain system integrity via a call to ImpersonateLoggedOnUser() using a handle to a session 0 process, and then call CreateProcess() to spawn Calc.exe which will hopefully reside in session 0.  A small POC was put together to test this in which:
 
+1. A handle to smss.exe is opened (system integrity process in session 0)
+2. ImpersonateLoggedOnUser() is called referencing that handle
+3. GetUserName() is called which returns that our process is now SYSTEM
+4. GetTokenInformation() is called to retrieve the session ID of our process's token
+5. CreateProcess() is called to spawn Calc.exe
 
-Winlogon is often used for escalation to system integrity from an Administrator process because it "exists in session 1"; however as [SpecterOps](https://posts.specterops.io/understanding-and-defending-against-access-token-theft-finding-alternatives-to-winlogon-exe-80696c8a73b) covers in incredible detail, the session that Winlogon resides in is not what opens the door to impersonation of its token. 
+The result of which is:
+
+![image](https://user-images.githubusercontent.com/91164728/164982050-caf90459-1a69-4cb5-9131-0a7b17bf41ac.png)
+
+As can be seen in this screenshot of the console output of this code, system is successfully impersonated; however GetTokenInformation reveals that the SessionId of our process's token is still 1, and as a result the call to CreateProcess() still yields a Calc.exe in session 1.  We will need to go deeper.
+
+### More research needed
+
+A google search turned up some relevant StackOverflow posts about this topic ([Here](https://stackoverflow.com/questions/66226029/windows-create-a-process-in-session-0-using-createprocesswithtokenw) and [Here](https://stackoverflow.com/questions/38427094/createprocessasuser-works-createprocesswithtokenw-does-not/38442543#38442543)) where an exceptionally knowledgable user named RbMm provided some much needed and seemingly otherwise hard to come by information.  
+
+Two additional API's exist when it comes to creating a process as a different user; CreateProcessWithToken() and CreateProcessAsUser(). The above StackOverflow links delve heavily into this and ultimately reveal that CreateProcessWithToken() is in fact a wrapper for CreateProcessAsUser(), and as part of the function call it sets the SessionId back to the original session of the calling process; all this means that for our purposes, if we want to create a process with a session id different than that of our calling process, we need to use CreateProcessAsUser() and do a little more work manually.  [This](https://stackoverflow.com/questions/39238086/running-process-in-system-context) StackOverflow post, again from RbMm, provides more critical information:
+
+```
+To "launch a process in the system context", if you want to run the process:
+
+-with the LocalSystem token.
+
+-in the System terminal session (0)
+
+Both, as I say, are possible. And all you need is SE_DEBUG_PRIVILEGE.
+
+1. more simply - open some system process with PROCESS_CREATE_PROCESS access right. Use this handle with UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS). As a result, your started process inherits a token from the system process. This will be not work on XP, but there it is possible to hook NtCreateProcess/Ex() to replace HANDLE ParentProcess with your opened handle.
+
+2. Another way is to use CreateProcessAsUser(). Before creating the process, you will be need SE_ASSIGNPRIMARYTOKEN_PRIVILEGE and SE_TCB_PRIVILEGE privileges to set the token's TokenSessionId (if you want to run in session 0).
+```
+
+Method 1 in the above quote is largely what was already tried; I went back and ensured that PROCESS_CREATE_PROCESS was specified with spoolsv.exe, and while the resultant calc.exe DID have system integrity, it still resided in session 1.  On to method 2. 
+
+### Finally some code
+
+As mentioned in method 2, SE_ASSIGNPRIMARYTOKEN_PRIVILEGE and SE_TCP_PRIVILEGE are required to successfully use CreateProcessAsUser(); unfortunately Administrators do not possess either.  The first step will be to impersonate a system token that does possess these privileges; in order to do so the SeDebugPrivilege must first be enabled in our shellcode runner's token:
+
+![image](https://user-images.githubusercontent.com/91164728/164985876-834e580f-fe1e-437d-851f-7ab3e652f052.png)
+
+There are many choices; spoolsv, winlogon, and smss all have the desired privileges, but there are a few things to be considered. Spoolsv cannot be immediately impersonated since it does not belong to Administrators, so an initial impersonation would need to be done of another system integrity process.  Winlogon could be used to gain these privileges but it resides in session 1.  Smss could be impersonated, it does reside in session 0, however it is PPL protected.
+
+For this initial step, winlogon is the most obvious choice as the session is not important yet; our process simply needs the privileges in question.  Winlogon will be used for now, but this will be revisited later.
+
+![image](https://user-images.githubusercontent.com/91164728/164986090-fe0a1e57-8ae5-495e-83af-443dbab9c6c8.png)
+
+After impersonating winlogon's token, the SE_ASSIGNPRIMARYTOKEN_NAME privilege must be enabled in our token.  Note that OpenThreadToken() and GetCurrentThread() are used as opposed to OpenProcessToken() and GetCurrentProcess(), as the impersonated token resides in the current thread:
+
+![image](https://user-images.githubusercontent.com/91164728/164990815-71a3005a-f869-436c-8ba5-0bf27c4631e6.png)
+
+At this point a handle to a session 0 process needs to be opened and DuplicateToken() called to create a copy of it's token for use with CreateProcessAsUser().  Given that our shellcode runner is now running with system integrity, spoolsv could be utilized as it meets this criteria; there is an additional consideration however.  The spawned calc.exe will inherit the permissions of the token used in CreateProcessAsUser().  Looking at spoolsv's permissions shows some important ones, however it is a far shorter list than a lot of other system integrity process's permissions:
+
+![image](https://user-images.githubusercontent.com/91164728/164986384-f14150de-83e3-40e1-8e64-3e7b913f983d.png)
+
+It seems desirable to duplicate a different session 0 process's token that has more privileges if possible, as one never knows when they might come in handy.  To do so we will shift our focus to smss.exe.
+
+As mentioned this is a PPL protected process, however even with that being the case, its token can be duplicated for use with CreateProcessAsUser().  What's more, it has the requisite permissions to call CreateProcessAsUser(), so we can consolidate steps by impersonating smss.exe and enabling privileges within that impersonated token instead of doing so with winlogon; this will allow us to call DuplicateToken() using the same open handle used for ImpersonateLoggedOnUser().  Combining these steps yields the following code:
+
+![image](https://user-images.githubusercontent.com/91164728/164990798-fb8f687c-e384-4e6e-a406-e86149361eb1.png)
+
+Finally, CreateProcessAsUser() may be called to create notepad.exe in session 0 (Note that notepad.exe was used in this example as calc.exe was exiting instantly without shellcode injected into it):
+
+![image](https://user-images.githubusercontent.com/91164728/164986766-92f2a728-86ba-45d7-ae93-8562fcf5ca95.png)
+
+And the resultant notepad.exe:
+
+![image](https://user-images.githubusercontent.com/91164728/164986816-314aa51f-3e4f-4705-a2ff-034f5f87bc7d.png)
+
+Success! 
+
+Unfortunately, as previously mentioned, it is not possible to use a PPL protected process (which most of the always-present, default session 0 processes are) for PPID spoofing; ideally we want a process in session 0 as the parent for the session 0 spawned process. While spoolsv wasn't an ideal candidate for token duplication due to its limited privileges, it is a fine candidate for PPID spoofing (to reiterate, in the operational deployment of these techniques a different process than calc.exe or notepad.exe is spawned which makes a lot more sense than either of those to exist as a child process of spoolsv). When the session migration code is combined with the normal PPID spoofing code and injection with shellcode, the result is a calc.exe running in session 0, with all of the privileges of smss.exe, with spoolsv.exe as its parent PID:
+
+![image](https://user-images.githubusercontent.com/91164728/164990184-be7a4073-4669-4cb8-b21f-56c8bc30dff4.png)
+
+A large IOC of this technique is that it is abnormal for a child process to have greater privileges than its parent; however in testing this has not proven to be an issue against a major vendor's EDR. 
+
+The POC provided for this capability demonstrates everything walked through above with the exception of PPID spoofing.  Implementing PPID spoofing in conjunction with this capability is trivial and left to the reader to accomplish.
+
+# Self-Deletion
+
 
 
 
